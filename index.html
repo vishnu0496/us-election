@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>US Elections Map</title>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script src="https://d3js.org/topojson.v1.min.js"></script>
+    <style>
+        .dropdown {
+            margin: 10px;
+        }
+        .tooltip {
+            position: absolute;
+            text-align: center;
+            width: 160px;
+            padding: 8px;
+            background: lightgray;
+            border: 1px solid #333;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="dropdown">
+        <label for="stateSelect">Select State:</label>
+        <select id="stateSelect"></select>
+
+        <label for="yearSelect">Select Year:</label>
+        <select id="yearSelect"></select>
+
+        <button id="resetZoom" style="margin: 10px;">Reset Zoom</button>
+    </div>
+    <div id="map"></div>
+    <div id="legend"></div>
+    <div id="summary" style="margin-top: 20px;"></div>
+    <div id="tooltip" class="tooltip"></div>
+
+    <script>
+        const width = 960;
+        const height = 600;
+
+        const projection = d3.geoAlbersUsa()
+            .translate([width / 2, height / 2])
+            .scale(1000);
+
+        const path = d3.geoPath().projection(projection);
+
+        const svg = d3.select("#map")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height);
+
+        const tooltip = d3.select("#tooltip");
+
+        Promise.all([
+            d3.json("path/to/us-states-geojson.json"),
+            d3.csv("path/to/election-data.csv")
+        ]).then(([geoData, electionData]) => {
+            // Parse CSV data
+            electionData.forEach(d => {
+                d.year = +d.year;
+                d.candidatevotes = +d.candidatevotes;
+                d.totalvotes = +d.totalvotes;
+            });
+
+            const states = [...new Set(geoData.features.map(d => d.properties.name))];
+            const years = [...new Set(electionData.map(d => d.year))];
+
+            const stateSelect = d3.select("#stateSelect");
+            states.forEach(state => {
+                stateSelect.append("option").text(state).attr("value", state);
+            });
+
+            const yearSelect = d3.select("#yearSelect");
+            years.sort((a, b) => a - b).forEach(year => {
+                yearSelect.append("option").text(year).attr("value", year);
+            });
+
+            const partyColors = {
+                'DEMOCRAT': '#1f77b4',  // Blue
+                'REPUBLICAN': '#d62728', // Red
+                'OTHER': '#7f7f7f'      // Gray for other parties
+            };
+
+            // Draw legend
+            const legend = d3.select("#legend")
+                .append("svg")
+                .attr("width", 300)
+                .attr("height", 50);
+
+            const parties = Object.keys(partyColors);
+            parties.forEach((party, i) => {
+                legend.append("rect")
+                    .attr("x", i * 70)
+                    .attr("y", 10)
+                    .attr("width", 20)
+                    .attr("height", 20)
+                    .attr("fill", partyColors[party]);
+
+                legend.append("text")
+                    .attr("x", i * 70 + 25)
+                    .attr("y", 25)
+                    .text(party)
+                    .style("font-size", "12px")
+                    .attr("alignment-baseline", "middle");
+            });
+
+            let selectedYear = years[0];  // Default initial year
+            let winningParties = {};
+
+            function updateMap() {
+                const yearData = electionData.filter(d => d.year === selectedYear);
+
+                // Determine winning party per state
+                winningParties = {};
+                yearData.forEach(d => {
+                    if (!winningParties[d.state] || d.candidatevotes > winningParties[d.state].candidatevotes) {
+                        winningParties[d.state] = {
+                            party: d.party_simplified,
+                            votes: d.candidatevotes
+                        };
+                    }
+                });
+
+                // Update map color
+                svg.selectAll("path")
+                    .transition().duration(800)
+                    .attr("fill", d => {
+                        const stateName = d.properties.name.toUpperCase();
+                        const result = winningParties[stateName];
+                        return result ? (partyColors[result.party] || partyColors['OTHER']) : '#d3d3d3';
+                    });
+            }
+
+            svg.selectAll("path")
+                .data(geoData.features)
+                .enter()
+                .append("path")
+                .attr("d", path)
+                .attr("fill", "#d3d3d3")
+                .attr("stroke", "#333")
+                .on("mouseover", function (event, d) {
+                    const stateName = d.properties.name.toUpperCase();
+                    const result = winningParties[stateName];
+
+                    if (result) {
+                        const partyColor = partyColors[result.party] || partyColors['OTHER'];
+                        d3.select(this).attr("fill", d3.color(partyColor).darker(0.5));
+
+                        tooltip.style("opacity", 1)
+                            .html(`<strong>State:</strong> ${stateName}<br>
+                                   <strong>Winning Party:</strong> ${result.party}<br>
+                                   <strong>Votes:</strong> ${result.votes}`)
+                            .style("left", (event.pageX + 15) + "px")
+                            .style("top", (event.pageY - 28) + "px");
+                    }
+                })
+                .on("mousemove", function (event) {
+                    tooltip.style("left", (event.pageX + 15) + "px")
+                           .style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", function () {
+                    d3.select(this).attr("fill", d => {
+                        const stateName = d.properties.name.toUpperCase();
+                        const result = winningParties[stateName];
+                        return result ? (partyColors[result.party] || partyColors['OTHER']) : '#d3d3d3';
+                    });
+                    tooltip.style("opacity", 0);
+                })
+                .on("click", function (event, d) {
+                    const stateName = d.properties.name.toUpperCase();
+                    const stateData = electionData.filter(record => record.state === stateName && record.year === selectedYear);
+
+                    if (stateData.length > 0) {
+                        stateData.sort((a, b) => b.candidatevotes - a.candidatevotes);
+                        const topCandidates = stateData.slice(0, 3);
+                        
+                        d3.select("#summary")
+                            .html(`<h3>${stateName} - ${selectedYear} Election Results</h3>
+                                   <ul>
+                                       ${topCandidates.map(c => `<li><strong>${c.candidate}</strong> (${c.party_simplified}): ${((c.candidatevotes / c.totalvotes) * 100).toFixed(2)}%</li>`).join('')}
+                                   </ul>`);
+                    } else {
+                        d3.select("#summary").html(`<p>No data available for ${stateName} in ${selectedYear}</p>`);
+                    }
+                });
+
+            yearSelect.on("change", function () {
+                selectedYear = +this.value;
+                updateMap();
+
+                // Zoom to the state with the highest total votes for the selected year
+                const mostVotedState = electionData.filter(d => d.year === selectedYear)
+                    .reduce((max, current) => (current.totalvotes > (max.totalvotes || 0) ? current : max), {});
+
+                const stateFeature = geoData.features.find(d => d.properties.name.toUpperCase() === mostVotedState.state.toUpperCase());
+
+                if (stateFeature) {
+                    const [[x0, y0], [x1, y1]] = path.bounds(stateFeature);
+                    const scale = Math.min(8, 0.9 / Math.max((x1 - x0) / width, (y1 - y0) / height));
+                    const translate = [(width - scale * (x0 + x1)) / 2, (height - scale * (y0 + y1)) / 2];
+
+                    svg.transition().duration(1000).attr("transform", `translate(${translate}) scale(${scale})`);
+                }
+            });
+
+            stateSelect.on("change", function () {
+                const selectedState = this.value;
+                const stateFeature = geoData.features.find(d => d.properties.name === selectedState);
+                if (stateFeature) {
+                    const [[x0, y0], [x1, y1]] = path.bounds(stateFeature);
+                    const scale = Math.min(8, 0.9 / Math.max((x1 - x0) / width, (y1 - y0) / height));
+                    const translate = [(width - scale * (x0 + x1)) / 2, (height - scale * (y0 + y
